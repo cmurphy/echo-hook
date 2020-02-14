@@ -5,10 +5,10 @@ metadata:
 webhooks:
 - name: "hello.world.hook"
   rules:
-  - apiGroups:   ["", "apps"]
+  - apiGroups:   [""]
     apiVersions: ["v1"]
     operations:  ["CREATE", "UPDATE"]
-    resources:   ["deployments", "replicasets", "pods"]
+    resources:   ["pods"]
     scope:       "Namespaced"
   clientConfig:
     url: "https://hello.world.hook:8080/"

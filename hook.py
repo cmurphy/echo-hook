@@ -46,14 +46,11 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
             return
 
         kind = admissionRequest['request']['kind']['kind']
-        if kind == 'Deployment' or kind == "ReplicaSet":
-            spec = admissionRequest['request']['object']['spec']
-            requested_pods = spec['replicas']
-        elif kind == "Pod":
+        if kind == "Pod":
             requested_pods = 1
         else:
             self.send_error(
-                400, "Only works for deployments, replicasets, or pods")
+                400, "Only works for pods")
             return
 
         print("Incoming request: Kind: %s, Pod Count: %d\n" %
