@@ -3,6 +3,8 @@ import ssl
 import http.server
 
 import openstack
+from oslo_limit import limit
+import oslo_limit.exception
 import kubernetes.client
 
 
@@ -13,6 +15,7 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
     def _setup_openstack_connection(self):
         if not self.openstack_conn:
             self.openstack_conn = openstack.connect(cloud='devstack')
+            limit._SDK_CONNECTION = self.openstack_conn.identity
 
     def _get_kubernetes_data(self, namespace):
         config = kubernetes.config.load_kube_config('kubeconfig.conf')
@@ -24,8 +27,10 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
             return
         return pods.items
 
+    def _usage_callback(self, project_id, resources_to_check):
+        return {'pods': len(self._get_kubernetes_data(project_id))}
+
     def do_POST(self):
-        self._setup_openstack_connection()
         data = self.rfile.read(int(self.headers['Content-Length']))
         try:
             admissionRequest = json.loads(data)
@@ -52,9 +57,14 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
             return
 
         print("Incoming request: Kind: %s, Pod Count: %d\n" %
-            (kind, requested_pods))
+              (kind, requested_pods))
 
-        current_pods = len(self._get_kubernetes_data(namespace))
+        self._setup_openstack_connection()
+
+        sc = self.openstack_conn.config.get_service_catalog()
+        endpoint = sc.endpoint_data_for('kubernetes').endpoint_id
+        limit.CONF.oslo_limit.endpoint_id = endpoint
+        enforcer = limit.Enforcer(self._usage_callback)
 
         allowed = True
 
@@ -69,18 +79,14 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
                 print("denying request: no matching project or domain")
                 allowed = False
 
-        service = self.openstack_conn.identity.find_service('kubernetes')
+        deltas = {'pods': requested_pods}
         if allowed:
-            limit = self.openstack_conn.identity.limits(
-                project_id=project['id'],
-                service_id=service['id'],
-                resource_name='pods'
-            )
-            resource_limit = next(limit).resource_limit
-            print("requested: %d, current: %d, limit: %d" % (
-                requested_pods, current_pods, resource_limit))
-            if requested_pods + current_pods > resource_limit:
+            try:
+                enforcer.enforce(project['id'], deltas)
+                print("Successfully claimed %d pods" % requested_pods)
+            except oslo_limit.exception.ProjectOverLimit:
                 allowed = False
+                print("Could not claim %d pods" % requested_pods)
 
         admissionResponse = {
             'apiVersion': 'admission.k8s.io/v1',
